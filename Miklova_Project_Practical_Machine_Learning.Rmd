@@ -1,0 +1,201 @@
+---
+title: "Practical Machine Learning - classification"
+author: "Zaneta Miklova"
+date: "October 20, 2015"
+output: html_document
+---
+
+This is solution of coursera project - Practical Machine Learning. 
+
+The goal of my project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. I may use any of the other variables to predict with. I should create a report describing how I built my model, how I used cross validation, what I think the expected out of sample error is, and why I made the choices I did. I will also use my prediction model to predict 20 different test cases. 
+
+###Load the data
+
+```{r cache=TRUE, echo=TRUE}
+train<-read.csv("pml-training.csv")
+test<-read.csv("pml-testing.csv")
+cat("Dimension of train"); dim(train); cat("Dimension of test"); dim(test)
+```
+
+###Remove unnecessary columns
+
+We see that there is column X in train set and test set. It is only ID of row and it does not have any influence on prediction. We remove it.
+```{r cache=TRUE, echo=TRUE}
+train<-subset(train, select=-c(X))
+test<-subset(test, select=-c(X))
+```
+
+Also problem_id in test set does not have influence on prediction. It is only informative column for submission. We remove it.
+```{r cache=TRUE, echo=TRUE}
+test<-subset(test, select=-c(problem_id))
+```
+
+If we look on the test data, we will see that there are a many columns with NAs in all twenty raws. This columns do not give us any information to improve our model. So we can remove this columns for test set and for training set too, because this variables should not be on predictive model.
+
+```{r cache=TRUE, echo=TRUE}
+test<-test[,!colSums(is.na(test))==20]  #columns with NAs in all rows
+colnames<-colnames(test)                #
+colnames<-append(colnames, "classe")    #we let column classe in train set
+train<-train[,colnames]                 #select only this columns from train set
+```
+
+Now we reduced count of columns (variables) from 160 to 60.
+```{r cache=TRUE, echo=TRUE}
+cat("Dimension of train"); dim(train); cat("Dimension of test"); dim(test)
+```
+
+###Cross-validation - split to training and testing
+Because we want to use cross-validation for validation of the model, we split the train set into training and testing (80/20).
+
+First we need to read some important libraries:
+
+```{r cache=TRUE, echo=TRUE, warning=FALSE}
+library(AppliedPredictiveModeling)
+library(rpart)
+library(rattle)
+library(rpart.plot)
+library(caret)
+library(ggplot2)
+library(MASS)
+```
+
+And now we can provide the splitting.
+
+```{r, cache=TRUE, echo=TRUE}
+set.seed(1512)                                               # set seed for reproducibal research
+inTrain <- createDataPartition(train$classe, p = 0.8)[[1]]   #index of rows for train set - 80%
+training <- train[ inTrain,]                                 #create training
+testing <- train[-inTrain,]                                  #create testing
+```
+
+###Idea before creating the model
+Because we know that we have 6 different pacients and their measured values of something, we can make this simple idea: 
+
+__!!! Create model for every patients separately !!!__
+
+Because we assume that different patients have different physical based and general model should not be so accuracy.
+
+```{r, cache=TRUE, echo=TRUE}
+trainSplit<-split(training, training$user_name)   #split the training according to user name
+testSplit<-split(testing, testing$user_name)      #split the testing according to user name
+
+test2<-test         #temporal variables
+test2$pred<-NA      #temporal variables
+test2$pred2<-NA     #temporal variables
+```
+
+###Decision Tree
+In first step We try to use decision tree for creating the model. There do not have to be so much variables in the model, because e.g. factor variables do not have influence on the decision tree. We can not ask if something is less or not than sime threshold. But does not matter in this moment and we put all variables into the model. Decision tree is taking the most important variables to the model.
+
+```{r, cache=TRUE, echo=TRUE}
+accurancyTrain<-vector()
+accurancyTest<-vector()
+for(i in 1:6){
+     name<-names(trainSplit)[i]         #get patient's name
+     index<-(test$user_name==name)      #get index of the rows in original test dateset of this patient 
+     #select train data of this patient as the training data (training part of training)
+     training<-trainSplit[[i]]          
+     #select test data of this patient as the testing data  (testing part of training)
+     testing<-testSplit[[i]]            
+     
+     #create model based on decision tree for every patients separately
+     modFit<-train(classe~., method="rpart",data=training)       
+     
+     #predict values for training set
+     pred<-predict(modFit, newdata = training)                   
+     #predict values for testing set and save it to the same testing frame
+     testing$pred<-predict(modFit, newdata = testing)            
+     #predict values for original test data
+     test2[index, "pred2"]<-as.character(predict(modFit, newdata=test[index,])) 
+     
+     #accurancy of prediction for training data
+     accurancyTrain<-append(accurancyTrain, round(sum(training$classe==pred)/(dim(training)[1]),2))
+     #accurancy of prediction for testing data
+     accurancyTest<-append(accurancyTest, round(sum(testing$classe==testing$pred)/(dim(testing)[1]),2))
+
+}
+```
+
+We can show one decision tree e.g.  for **`r name`**.
+```{r, cache=TRUE, echo=TRUE}
+     fancyRpartPlot(modFit$finalModel)
+```
+
+####Accurancy of the models
+
+In table below you can see the accurancy of the models for every patients separately.
+
+| Model         |Accurancy of train| Accurancy of test  |
+| ------------- |:-------------:| -----:|
+| 1.             | `r accurancyTrain[1]`      | `r accurancyTest[1]` |
+| 2.             | `r accurancyTrain[2]`      | `r accurancyTest[2]` |
+| 3.             | `r accurancyTrain[3]`      | `r accurancyTest[3]` |
+| 4.             | `r accurancyTrain[4]`      | `r accurancyTest[4]` |
+| 5.             | `r accurancyTrain[5]`      | `r accurancyTest[5]` |
+| 6.             | `r accurancyTrain[6]`      | `r accurancyTest[6]` |
+|**Average**        | **`r round(sum(accurancyTrain)/6,2)`**      | **`r round(sum(accurancyTest)/6,2)`** |
+
+We can see, that our accurancy are not so good. We want to be better in prediction. So we can try different method of prediction. We can try Random Forest.
+
+###Random Forest
+
+```{r, cache=TRUE, echo=TRUE}
+accurancyTrain<-vector()
+accurancyTest<-vector()
+for(i in 1:6){
+     name<-names(trainSplit)[i]         #get patient's name
+     index<-(test$user_name==name)      #get index of the rows in original test dateset of this patient 
+     #select train data of this patient as the training data (training part of training)
+     training<-trainSplit[[i]]          
+     #select test data of this patient as the testing data  (testing part of training)
+     testing<-testSplit[[i]]            
+     
+     #create model based on random forest for every patients separately
+     modFit<-train(classe~., method="rf",data=training)      
+     
+     #predict values for training set
+     pred<-predict(modFit, newdata = training)                   
+     #predict values for testing set and save it to the same testing frame
+     testing$pred<-predict(modFit, newdata = testing)            
+     #predict values for original test data
+     test2[index, "pred2"]<-as.character(predict(modFit, newdata=test[index,])) 
+     
+     #accurancy of prediction for training data
+     accurancyTrain<-append(accurancyTrain, round(sum(training$classe==pred)/(dim(training)[1]),2))
+     #accurancy of prediction for testing data
+     accurancyTest<-append(accurancyTest, round(sum(testing$classe==testing$pred)/(dim(testing)[1]),2))
+
+}
+```
+
+####Accurancy of the models
+
+In table below you can see the accurancy of the models for every patients separately.
+
+| Model         |Accurancy of train| Accurancy of test  |
+| ------------- |:-------------:| -----:|
+| 1.             | `r accurancyTrain[1]`      | `r accurancyTest[1]` |
+| 2.             | `r accurancyTrain[2]`      | `r accurancyTest[2]` |
+| 3.             | `r accurancyTrain[3]`      | `r accurancyTest[3]` |
+| 4.             | `r accurancyTrain[4]`      | `r accurancyTest[4]` |
+| 5.             | `r accurancyTrain[5]`      | `r accurancyTest[5]` |
+| 6.             | `r accurancyTrain[6]`      | `r accurancyTest[6]` |
+|**Average**        | **`r round(sum(accurancyTrain)/6,2)`**      | **`r round(sum(accurancyTest)/6,2)`** |
+
+####Prediction with random forest
+The prediction for twenty rows in original data set is:
+
+```{r, cache=TRUE, echo=TRUE}
+test2[,c("user_name", "pred2")]
+```
+
+After validation in Submission part of this project. I can see that all my predictions are correct. I created the best models for this situation.
+
+###Conclusion
+On first step I loaded the data and I removed the unnecessary columns from the train set and test set. 
+
+In second step I splitted the train set into training and testing because of cross validation. 
+
+Next I made the decision that I created six different models for every patient separately.
+
+First I tried decision tree, but it was not so perfect and accurancy was low. I could play with parametres in decision tree, but I decided that I tried Random Forest. It was good decision and my prediction was perfect. All classes were predicted without mistakes.
